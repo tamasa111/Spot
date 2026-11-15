@@ -530,19 +530,40 @@ final class PushReceiver: SharedInstance {
         }
         fatalError("couldn't find in app_data \(key)")
     }
+    
+    private func headerValue(_ raw: String, prefix: String) -> String {
+        for part in raw.split(separator: ";") {
+            let p = part.trimmingCharacters(in: .whitespaces)
+            if p.hasPrefix(prefix) { return String(p.dropFirst(prefix.count)) }
+        }
+        return raw
+    }
+
+    private func padded(_ s: String) -> String {
+        s + String(repeating: "=", count: (4 - s.count % 4) % 4)
+    }
 
     private func handleDataMessage(msg: McsProto_DataMessageStanza) {
         if appDataByKey(msg: msg, key: "message_type", doNotRaise: true) == "deleted_messages" {
             // The deleted_messages message does not contain data.
             return
         }
-        let cryptoKey = String(appDataByKey(msg: msg, key: "crypto-key").dropFirst(3)) // strip dh=
-        let salt = String(appDataByKey(msg: msg, key: "encryption").dropFirst(5)) // strip salt=
-        let subtype = appDataByKey(msg: msg, key: "subtype")
+        let rawKey = appDataByKey(msg: msg, key: "crypto-key", doNotRaise: true)
+        let rawSalt = appDataByKey(msg: msg, key: "encryption", doNotRaise: true)
+        let subtype = appDataByKey(msg: msg, key: "subtype", doNotRaise: true)
+
+        // Same parsing as before, so we're testing the current behavior
+        let cryptoKey = padded(headerValue(rawKey, prefix: "dh="))
+        let salt = padded(headerValue(rawSalt, prefix: "salt="))
 
         guard let credentials else { return }
 
         if subtype != credentials.gcm.app_id {}
+
+        print("[FCM] raw crypto-key header: \(rawKey)")
+        print("[FCM] raw encryption header: \(rawSalt)")
+        print("[FCM] parsed key (\(cryptoKey.count)): \(cryptoKey)")
+        print("[FCM] parsed salt (\(salt.count)): \(salt)")
 
         do {
             let decrypted = try FcmDecryptor.decryptRawData(rawData: msg.rawData, serverPublicKeyString: cryptoKey, saltString: salt, ownPrivateKeyDer: credentials.keys.privateKey, ownSecretString: credentials.keys.secret)
@@ -565,7 +586,9 @@ final class PushReceiver: SharedInstance {
             }
 
             resetErrorCount(errorType: .notify)
-        } catch {}
+        } catch {
+            print("[FCM] decrypt failed: \(error)")
+        }
     }
 
     private func handlePing(ping _: McsProto_HeartbeatPing) {
